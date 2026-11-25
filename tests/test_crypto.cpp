@@ -1,6 +1,6 @@
 #include "keel/crypto.h"
-
-#include <cstdio>
+#include "keel/format.h"
+#include "keel/io.h"
 
 namespace {
 
@@ -11,17 +11,16 @@ i32 g_failures = 0;
 
 void check_eq_str(StringRef label, StringRef got, StringRef expected) {
     if (got != expected) {
-        std::fprintf(stderr, "FAIL %.*s: got=%.*s expected=%.*s\n",
-                     as<int>(label.size()), label.data(),
-                     as<int>(got.size()), got.data(),
-                     as<int>(expected.size()), expected.data());
+        const String msg = format("FAIL {}: got={} expected={}\n", label, got, expected);
+        stderr_write(msg.as_ref());
         ++g_failures;
     }
 }
 
 void check_true(StringRef label, bool cond) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL %.*s\n", as<int>(label.size()), label.data());
+        const String msg = format("FAIL {}\n", label);
+        stderr_write(msg.as_ref());
         ++g_failures;
     }
 }
@@ -276,8 +275,8 @@ int main(int argc, char** argv) {
         auto msg = from_hex(StringRef(argv[3]));
         if (!d.has_value() || !msg.has_value()) return 2;
         d->update(msg->as_ref());
-        const String h = to_hex(d->finalize().as_ref());
-        std::printf("%.*s\n", as<int>(h.size()), h.data());
+        const String line = format("{}\n", to_hex(d->finalize().as_ref()));
+        stdout_write(line.as_ref());
         return 0;
     }
     if (argc == 5 && StringRef(argv[1]) == "--hmac") {
@@ -285,8 +284,8 @@ int main(int argc, char** argv) {
         auto key = from_hex(StringRef(argv[3]));
         auto msg = from_hex(StringRef(argv[4]));
         if (!alg.has_value() || !key.has_value() || !msg.has_value()) return 2;
-        const String h = to_hex(Hmac::compute(*alg, key->as_ref(), msg->as_ref()).as_ref());
-        std::printf("%.*s\n", as<int>(h.size()), h.data());
+        const String line = format("{}\n", to_hex(Hmac::compute(*alg, key->as_ref(), msg->as_ref()).as_ref()));
+        stdout_write(line.as_ref());
         return 0;
     }
 
@@ -300,9 +299,10 @@ int main(int argc, char** argv) {
     test_kdf_rfcs();
 
     if (g_failures == 0) {
-        std::printf("ALL keel_crypto tests PASSED.\n");
+        stdout_write("ALL keel_crypto tests PASSED.\n");
         return 0;
     }
-    std::fprintf(stderr, "keel_crypto tests FAILED: %d failure(s).\n", as<int>(g_failures));
+    const String summary = format("keel_crypto tests FAILED: {} failure(s).\n", g_failures);
+    stderr_write(summary.as_ref());
     return 1;
 }
