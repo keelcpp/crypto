@@ -264,15 +264,356 @@ void test_kdf_rfcs() {
     check_true("PBKDF2 iter=0 rejected", !pbkdf2_hmac(DigestAlgorithm::Sha1, pw_b, st_b, 0u, 20u).has_value());
 }
 
+void test_aes_fips197_and_modes() {
+    // FIPS-197 Appendix C.1 (AES-128), C.2 (AES-192), C.3 (AES-256)
+    const Array<u8> pt = hex_bytes("00112233445566778899aabbccddeeff");
+
+    {
+        const Array<u8> k128 = hex_bytes("000102030405060708090a0b0c0d0e0f");
+        Aes aes;
+        check_true("AES-128 init", aes.init(k128.as_ref()) && aes.rounds() == 10u);
+        u8 ct[16] = {};
+        u8 dec[16] = {};
+        aes.encrypt_block(pt.data(), ct);
+        check_eq_str("FIPS-197 AES-128 enc", to_hex(ArrayRef<u8>(ct, 16u)).as_ref(),
+                     "69c4e0d86a7b0430d8cdb78070b4c55a");
+        aes.decrypt_block(ct, dec);
+        check_eq_str("FIPS-197 AES-128 dec", to_hex(ArrayRef<u8>(dec, 16u)).as_ref(),
+                     "00112233445566778899aabbccddeeff");
+    }
+    {
+        const Array<u8> k192 = hex_bytes("000102030405060708090a0b0c0d0e0f1011121314151617");
+        Aes aes;
+        check_true("AES-192 init", aes.init(k192.as_ref()) && aes.rounds() == 12u);
+        u8 ct[16] = {};
+        u8 dec[16] = {};
+        aes.encrypt_block(pt.data(), ct);
+        check_eq_str("FIPS-197 AES-192 enc", to_hex(ArrayRef<u8>(ct, 16u)).as_ref(),
+                     "dda97ca4864cdfe06eaf70a0ec0d7191");
+        aes.decrypt_block(ct, dec);
+        check_eq_str("FIPS-197 AES-192 dec", to_hex(ArrayRef<u8>(dec, 16u)).as_ref(),
+                     "00112233445566778899aabbccddeeff");
+    }
+    {
+        const Array<u8> k256 = hex_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        Aes aes;
+        check_true("AES-256 init", aes.init(k256.as_ref()) && aes.rounds() == 14u);
+        u8 ct[16] = {};
+        u8 dec[16] = {};
+        aes.encrypt_block(pt.data(), ct);
+        check_eq_str("FIPS-197 AES-256 enc", to_hex(ArrayRef<u8>(ct, 16u)).as_ref(),
+                     "8ea2b7ca516745bfeafc49904b496089");
+        aes.decrypt_block(ct, dec);
+        check_eq_str("FIPS-197 AES-256 dec", to_hex(ArrayRef<u8>(dec, 16u)).as_ref(),
+                     "00112233445566778899aabbccddeeff");
+    }
+
+    // Invalid key length rejected
+    {
+        const Array<u8> badk = hex_bytes("0001020304050607");
+        Aes aes;
+        check_true("AES bad key len", !aes.init(badk.as_ref()) && !aes.valid());
+    }
+
+    // NIST SP 800-38A F.2.1 CBC-AES128.Encrypt & F.5.1 CTR-AES128.Encrypt
+    {
+        const Array<u8> key = hex_bytes("2b7e151628aed2a6abf7158809cf4f3c");
+        const Array<u8> iv = hex_bytes("000102030405060708090a0b0c0d0e0f");
+        const Array<u8> msg = hex_bytes(
+            "6bc1bee22e409f96e93d7e117393172a"
+            "ae2d8a571e03ac9c9eb76fac45af8e51"
+            "30c81c46a35ce411e5fbc1191a0a52ef"
+            "f69f2445df4f9b17ad2b417be66c3710");
+        const StringRef expected_cbc =
+            "7649abac8119b246cee98e9b12e9197d"
+            "5086cb9b507219ee95db113a917678b2"
+            "73bed6b8e3c1743b7116e69e22229516"
+            "3ff1caa1681fac09120eca307586e1a7";
+
+        Array<u8> ct(msg.size(), u8{0u});
+        Array<u8> dec(msg.size(), u8{0u});
+        check_true("CBC-128 raw enc ok", aes_cbc_encrypt_blocks(key.as_ref(), iv.data(), msg.as_ref(), ct.as_mut_ref()));
+        check_eq_str("NIST CBC-128 enc", to_hex(ct.as_ref()).as_ref(), expected_cbc);
+        check_true("CBC-128 raw dec ok", aes_cbc_decrypt_blocks(key.as_ref(), iv.data(), ct.as_ref(), dec.as_mut_ref()));
+        check_true("NIST CBC-128 dec", ct_equal(dec.as_ref(), msg.as_ref()));
+
+        // PKCS#7 round-trip: empty, partial, exact block
+        const usize lengths[4] = {0u, 1u, 15u, 16u};
+        for (usize idx = 0u; idx < 4u; ++idx) {
+            const ArrayRef<u8> slice(msg.data(), lengths[idx]);
+            auto padded_ct = aes_cbc_encrypt(key.as_ref(), iv.data(), slice);
+            check_true("CBC PKCS#7 enc ok", padded_ct.has_value());
+            if (padded_ct.has_value()) {
+                auto unpadded = aes_cbc_decrypt(key.as_ref(), iv.data(), padded_ct->as_ref());
+                check_true("CBC PKCS#7 dec ok", unpadded.has_value() && ct_equal(unpadded->as_ref(), slice));
+                // Tamper last ciphertext byte -> padding check must fail
+                Array<u8> bad = padded_ct->clone();
+                bad[bad.size() - 1u] ^= 0x01u;
+                check_true("CBC PKCS#7 bad pad", !aes_cbc_decrypt(key.as_ref(), iv.data(), bad.as_ref()).has_value());
+            }
+        }
+
+        // NIST SP 800-38A F.5.1 CTR-AES128
+        const Array<u8> ctr_iv = hex_bytes("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff");
+        const StringRef expected_ctr =
+            "874d6191b620e3261bef6864990db6ce"
+            "9806f66b7970fdff8617187bb9fffdff"
+            "5ae4df3edbd5d35e5b4f09020db03eab"
+            "1e031dda2fbe03d1792170a0f3009cee";
+        Array<u8> ctr_out(msg.size(), u8{0u});
+        check_true("CTR-128 enc ok", aes_ctr_xor(key.as_ref(), ctr_iv.data(), msg.as_ref(), ctr_out.as_mut_ref()));
+        check_eq_str("NIST CTR-128 enc", to_hex(ctr_out.as_ref()).as_ref(), expected_ctr);
+        // In-place decrypt
+        check_true("CTR-128 dec in-place", aes_ctr_xor(key.as_ref(), ctr_iv.data(), ctr_out.as_ref(), ctr_out.as_mut_ref()));
+        check_true("NIST CTR-128 dec", ct_equal(ctr_out.as_ref(), msg.as_ref()));
+    }
+}
+
+void test_aes_gcm_nist() {
+    auto check_gcm = [](StringRef label, StringRef key_hex, StringRef iv_hex,
+                        StringRef aad_hex, StringRef pt_hex,
+                        StringRef exp_ct_hex, StringRef exp_tag_hex) {
+        const Array<u8> key = hex_bytes(key_hex);
+        const Array<u8> iv = hex_bytes(iv_hex);
+        const Array<u8> aad = hex_bytes(aad_hex);
+        const Array<u8> pt = hex_bytes(pt_hex);
+        Array<u8> ct(pt.size(), u8{0u});
+        u8 tag[16] = {};
+
+        check_true(label, aes_gcm_encrypt(key.as_ref(), iv.as_ref(), aad.as_ref(),
+                                          pt.as_ref(), ct.as_mut_ref(), tag));
+        check_eq_str(label, to_hex(ct.as_ref()).as_ref(), exp_ct_hex);
+        check_eq_str(label, to_hex(ArrayRef<u8>(tag, 16u)).as_ref(), exp_tag_hex);
+
+        Array<u8> dec(pt.size(), u8{0xAAu});
+        check_true(label, aes_gcm_decrypt(key.as_ref(), iv.as_ref(), aad.as_ref(),
+                                          ct.as_ref(), tag, dec.as_mut_ref()));
+        check_true(label, ct_equal(dec.as_ref(), pt.as_ref()));
+
+        // Tampered tag must fail and zero `dec`
+        u8 bad_tag[16];
+        mem_copy(bad_tag, tag, 16u);
+        bad_tag[15] ^= 1u;
+        for (usize i = 0u; i < dec.size(); ++i) dec[i] = 0x55u;
+        check_true("GCM bad tag rejected",
+                   !aes_gcm_decrypt(key.as_ref(), iv.as_ref(), aad.as_ref(),
+                                    ct.as_ref(), bad_tag, dec.as_mut_ref()));
+        bool all_zero = true;
+        for (usize i = 0u; i < dec.size(); ++i) {
+            if (dec[i] != 0u) all_zero = false;
+        }
+        check_true("GCM bad tag zeroes plaintext", all_zero);
+    };
+
+    // NIST GCM Test Case 1 (AES-128, empty PT, empty AAD)
+    check_gcm("GCM TC1",
+              "00000000000000000000000000000000",
+              "000000000000000000000000",
+              "", "", "",
+              "58e2fccefa7e3061367f1d57a4e7455a");
+
+    // NIST GCM Test Case 2 (AES-128, 16-byte zero PT, empty AAD)
+    check_gcm("GCM TC2",
+              "00000000000000000000000000000000",
+              "000000000000000000000000",
+              "",
+              "00000000000000000000000000000000",
+              "0388dace60b6a392f328c2b971b2fe78",
+              "ab6e47d42cec13bdf53a67b21257bddf");
+
+    // NIST GCM Test Case 4 (AES-128, 60-byte PT, 20-byte AAD, 12-byte IV)
+    check_gcm("GCM TC4",
+              "feffe9928665731c6d6a8f9467308308",
+              "cafebabefacedbaddecaf888",
+              "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+              "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
+              "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+              "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e"
+              "21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091",
+              "5bc94fbc3221a5db94fae95ae7121a47");
+
+    // NIST GCM Test Case 5 (AES-128, 8-byte non-default IV -> GHASH J0 path)
+    check_gcm("GCM TC5",
+              "feffe9928665731c6d6a8f9467308308",
+              "cafebabefacedbad",
+              "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+              "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
+              "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+              "61353b4c2806934a777ff51fa22a4755699b2a714fcdc6f83766e5f97b6c7423"
+              "73806900e49f24b22b097544d4896b424989b5e1ebac0f07c23f4598",
+              "3612d2e79e3b0785561be14aaca2fccb");
+
+    // NIST GCM Test Case 6 (AES-128, 60-byte non-default IV)
+    check_gcm("GCM TC6",
+              "feffe9928665731c6d6a8f9467308308",
+              "9313225df88406e555909c5aff5269aa6a7a9538534f7da1e4c303d2a318a728"
+              "c3c0c95156809539fcf0e2429a6b525416aedbf5a0de6a57a637b39b",
+              "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+              "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
+              "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+              "8ce24998625615b603a033aca13fb894be9112a5c3a211a8ba262a3cca7e2ca7"
+              "01e4a9a4fba43c90ccdcb281d48c7c6fd62875d2aca417034c34aee5",
+              "619cc5aefffe0bfa462af43c1699d050");
+
+    // NIST GCM Test Case 10 (AES-192, 60-byte PT, 20-byte AAD, 12-byte IV)
+    check_gcm("GCM TC10",
+              "feffe9928665731c6d6a8f9467308308feffe9928665731c",
+              "cafebabefacedbaddecaf888",
+              "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+              "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
+              "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+              "3980ca0b3c00e841eb06fac4872a2757859e1ceaa6efd984628593b40ca1e19c"
+              "7d773d00c144c525ac619d18c84a3f4718e2448b2fe324d9ccda2710",
+              "2519498e80f1478f37ba55bd6d27618c");
+
+    // NIST GCM Test Case 16 (AES-256, 60-byte PT, 20-byte AAD, 12-byte IV)
+    check_gcm("GCM TC16",
+              "feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308",
+              "cafebabefacedbaddecaf888",
+              "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+              "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
+              "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+              "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa"
+              "8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662",
+              "76fc6ece0f4e1768cddf8853bb2d551b");
+}
+
+void test_chacha20_poly1305_rfc8439() {
+    // RFC 8439 §2.3.2 ChaCha20 block
+    {
+        const Array<u8> key = hex_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        const Array<u8> nonce = hex_bytes("000000090000004a00000000");
+        u8 blk[64] = {};
+        chacha20_block(key.data(), 1u, nonce.data(), blk);
+        check_eq_str("RFC8439 ChaCha20 block",
+                     to_hex(ArrayRef<u8>(blk, 64u)).as_ref(),
+                     "10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4e"
+                     "d2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e");
+    }
+
+    // RFC 8439 §2.4.2 ChaCha20 encryption
+    {
+        const Array<u8> key = hex_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        const Array<u8> nonce = hex_bytes("000000000000004a00000000");
+        const StringRef msg =
+            "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        const ArrayRef<u8> pt(reinterpret_cast<const u8*>(msg.data()), msg.size());
+        Array<u8> ct(pt.size(), u8{0u});
+        check_true("RFC8439 ChaCha20 xor", chacha20_xor(key.data(), 1u, nonce.data(), pt, ct.as_mut_ref()));
+        check_eq_str("RFC8439 ChaCha20 ct", to_hex(ct.as_ref()).as_ref(),
+                     "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0b"
+                     "f91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d8"
+                     "07ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab7793736"
+                     "5af90bbf74a35be6b40b8eedf2785e42874d");
+    }
+
+    // RFC 8439 §2.5.2 Poly1305
+    {
+        const Array<u8> key = hex_bytes("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b");
+        const StringRef msg = "Cryptographic Forum Research Group";
+        const ArrayRef<u8> bytes(reinterpret_cast<const u8*>(msg.data()), msg.size());
+        const auto tag = Poly1305::mac(key.data(), bytes);
+        check_eq_str("RFC8439 Poly1305", to_hex(tag.as_ref()).as_ref(),
+                     "a8061dc1305136c6c22b8baf0c0127a9");
+    }
+
+    // RFC 8439 §2.8.2 ChaCha20-Poly1305 AEAD
+    {
+        const Array<u8> key = hex_bytes("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+        const Array<u8> nonce = hex_bytes("070000004041424344454647");
+        const Array<u8> aad = hex_bytes("50515253c0c1c2c3c4c5c6c7");
+        const StringRef msg =
+            "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        const ArrayRef<u8> pt(reinterpret_cast<const u8*>(msg.data()), msg.size());
+        Array<u8> ct(pt.size(), u8{0u});
+        u8 tag[16] = {};
+
+        check_true("RFC8439 AEAD enc",
+                   chacha20_poly1305_encrypt(key.data(), nonce.data(), aad.as_ref(),
+                                             pt, ct.as_mut_ref(), tag));
+        check_eq_str("RFC8439 AEAD ct", to_hex(ct.as_ref()).as_ref(),
+                     "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6"
+                     "3dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36"
+                     "92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc"
+                     "3ff4def08e4b7a9de576d26586cec64b6116");
+        check_eq_str("RFC8439 AEAD tag", to_hex(ArrayRef<u8>(tag, 16u)).as_ref(),
+                     "1ae10b594f09e26a7e902ecbd0600691");
+
+        Array<u8> dec(pt.size(), u8{0xAAu});
+        check_true("RFC8439 AEAD dec",
+                   chacha20_poly1305_decrypt(key.data(), nonce.data(), aad.as_ref(),
+                                             ct.as_ref(), tag, dec.as_mut_ref()));
+        check_true("RFC8439 AEAD pt match", ct_equal(dec.as_ref(), pt));
+
+        // Tamper AAD -> decrypt must fail and wipe dec
+        Array<u8> bad_aad = aad.clone();
+        bad_aad[0] ^= 1u;
+        check_true("RFC8439 AEAD bad AAD",
+                   !chacha20_poly1305_decrypt(key.data(), nonce.data(), bad_aad.as_ref(),
+                                              ct.as_ref(), tag, dec.as_mut_ref()));
+        bool wiped = true;
+        for (usize i = 0u; i < dec.size(); ++i) {
+            if (dec[i] != 0u) wiped = false;
+        }
+        check_true("RFC8439 AEAD wipe on fail", wiped);
+    }
+
+    // draft-irtf-cfrg-xchacha §2.2.1 HChaCha20 & §A.3.1 XChaCha20-Poly1305
+    {
+        const Array<u8> key = hex_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        const Array<u8> nonce16 = hex_bytes("000000090000004a0000000031415927");
+        u8 subkey[32] = {};
+        hchacha20(key.data(), nonce16.data(), subkey);
+        check_eq_str("HChaCha20 subkey", to_hex(ArrayRef<u8>(subkey, 32u)).as_ref(),
+                     "82413b4227b27bfed30e42508a877d73a0f9e4d58a74a853c12ec41326d3ecdc");
+    }
+    {
+        const Array<u8> key = hex_bytes("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+        const Array<u8> nonce24 = hex_bytes("404142434445464748494a4b4c4d4e4f5051525354555657");
+        const Array<u8> aad = hex_bytes("50515253c0c1c2c3c4c5c6c7");
+        const StringRef msg =
+            "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        const ArrayRef<u8> pt(reinterpret_cast<const u8*>(msg.data()), msg.size());
+        Array<u8> ct(pt.size(), u8{0u});
+        u8 tag[16] = {};
+
+        check_true("XChaCha20-Poly1305 enc",
+                   xchacha20_poly1305_encrypt(key.data(), nonce24.data(), aad.as_ref(),
+                                              pt, ct.as_mut_ref(), tag));
+        check_eq_str("XChaCha20-Poly1305 ct", to_hex(ct.as_ref()).as_ref(),
+                     "bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb"
+                     "731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b452"
+                     "2f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff9"
+                     "21f9664c97637da9768812f615c68b13b52e");
+        check_eq_str("XChaCha20-Poly1305 tag", to_hex(ArrayRef<u8>(tag, 16u)).as_ref(),
+                     "c0875924c1c7987947deafd8780acf49");
+
+        Array<u8> dec(pt.size(), u8{0u});
+        check_true("XChaCha20-Poly1305 dec",
+                   xchacha20_poly1305_decrypt(key.data(), nonce24.data(), aad.as_ref(),
+                                              ct.as_ref(), tag, dec.as_mut_ref()));
+        check_true("XChaCha20-Poly1305 pt match", ct_equal(dec.as_ref(), pt));
+    }
+}
+
+Optional<Array<u8>> parse_cli_hex(StringRef s) {
+    if (s == "-") return Array<u8>{};
+    return from_hex(s);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     // Optional CLI mode for cross-verification scripts:
     //   test_crypto --hash <alg> <hex_msg>
     //   test_crypto --hmac <alg> <hex_key> <hex_msg>
+    //   test_crypto --aes-cbc-enc <hex_key> <hex_iv> <hex_pt>
+    //   test_crypto --aes-ctr <hex_key> <hex_iv> <hex_in>
+    //   test_crypto --aes-gcm-enc <hex_key> <hex_nonce> <hex_aad> <hex_pt>
+    //   test_crypto --chacha20-poly1305-enc <hex_key> <hex_nonce> <hex_aad> <hex_pt>
     if (argc == 4 && StringRef(argv[1]) == "--hash") {
         auto d = Digest::create(StringRef(argv[2]));
-        auto msg = from_hex(StringRef(argv[3]));
+        auto msg = parse_cli_hex(StringRef(argv[3]));
         if (!d.has_value() || !msg.has_value()) return 2;
         d->update(msg->as_ref());
         const String line = format("{}\n", to_hex(d->finalize().as_ref()));
@@ -281,10 +622,61 @@ int main(int argc, char** argv) {
     }
     if (argc == 5 && StringRef(argv[1]) == "--hmac") {
         auto alg = parse_digest_algorithm(StringRef(argv[2]));
-        auto key = from_hex(StringRef(argv[3]));
-        auto msg = from_hex(StringRef(argv[4]));
+        auto key = parse_cli_hex(StringRef(argv[3]));
+        auto msg = parse_cli_hex(StringRef(argv[4]));
         if (!alg.has_value() || !key.has_value() || !msg.has_value()) return 2;
         const String line = format("{}\n", to_hex(Hmac::compute(*alg, key->as_ref(), msg->as_ref()).as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 5 && StringRef(argv[1]) == "--aes-cbc-enc") {
+        auto key = parse_cli_hex(StringRef(argv[2]));
+        auto iv = parse_cli_hex(StringRef(argv[3]));
+        auto pt = parse_cli_hex(StringRef(argv[4]));
+        if (!key.has_value() || !iv.has_value() || !pt.has_value() || iv->size() != 16u) return 2;
+        auto ct = aes_cbc_encrypt(key->as_ref(), iv->data(), pt->as_ref());
+        if (!ct.has_value()) return 3;
+        const String line = format("{}\n", to_hex(ct->as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 5 && StringRef(argv[1]) == "--aes-ctr") {
+        auto key = parse_cli_hex(StringRef(argv[2]));
+        auto iv = parse_cli_hex(StringRef(argv[3]));
+        auto in = parse_cli_hex(StringRef(argv[4]));
+        if (!key.has_value() || !iv.has_value() || !in.has_value() || iv->size() != 16u) return 2;
+        Array<u8> out(in->size(), u8{0u});
+        if (!aes_ctr_xor(key->as_ref(), iv->data(), in->as_ref(), out.as_mut_ref())) return 3;
+        const String line = format("{}\n", to_hex(out.as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 6 && StringRef(argv[1]) == "--aes-gcm-enc") {
+        auto key = parse_cli_hex(StringRef(argv[2]));
+        auto nonce = parse_cli_hex(StringRef(argv[3]));
+        auto aad = parse_cli_hex(StringRef(argv[4]));
+        auto pt = parse_cli_hex(StringRef(argv[5]));
+        if (!key.has_value() || !nonce.has_value() || !aad.has_value() || !pt.has_value()) return 2;
+        Array<u8> ct(pt->size(), u8{0u});
+        u8 tag[16] = {};
+        if (!aes_gcm_encrypt(key->as_ref(), nonce->as_ref(), aad->as_ref(),
+                             pt->as_ref(), ct.as_mut_ref(), tag)) return 3;
+        const String line = format("{} {}\n", to_hex(ct.as_ref()), to_hex(ArrayRef<u8>(tag, 16u)));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 6 && StringRef(argv[1]) == "--chacha20-poly1305-enc") {
+        auto key = parse_cli_hex(StringRef(argv[2]));
+        auto nonce = parse_cli_hex(StringRef(argv[3]));
+        auto aad = parse_cli_hex(StringRef(argv[4]));
+        auto pt = parse_cli_hex(StringRef(argv[5]));
+        if (!key.has_value() || !nonce.has_value() || !aad.has_value() || !pt.has_value() ||
+            key->size() != 32u || nonce->size() != 12u) return 2;
+        Array<u8> ct(pt->size(), u8{0u});
+        u8 tag[16] = {};
+        if (!chacha20_poly1305_encrypt(key->data(), nonce->data(), aad->as_ref(),
+                                       pt->as_ref(), ct.as_mut_ref(), tag)) return 3;
+        const String line = format("{} {}\n", to_hex(ct.as_ref()), to_hex(ArrayRef<u8>(tag, 16u)));
         stdout_write(line.as_ref());
         return 0;
     }
@@ -297,6 +689,9 @@ int main(int argc, char** argv) {
     test_polymorphic_digest_and_streaming();
     test_hmac_rfc4231();
     test_kdf_rfcs();
+    test_aes_fips197_and_modes();
+    test_aes_gcm_nist();
+    test_chacha20_poly1305_rfc8439();
 
     if (g_failures == 0) {
         stdout_write("ALL keel_crypto tests PASSED.\n");

@@ -24,6 +24,8 @@ if(NOT TARGET keel::keel)
 endif()
 
 add_library(keel_crypto STATIC
+    src/aes.cpp
+    src/chacha20.cpp
     src/ct.cpp
     src/digest.cpp
     src/hmac.cpp
