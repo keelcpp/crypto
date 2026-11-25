@@ -200,6 +200,10 @@ Optional<DigestAlgorithm> parse_digest_algorithm(StringRef name) noexcept {
     if (eq_ascii_ci(name, "SHA-256") || eq_ascii_ci(name, "SHA256")) return DigestAlgorithm::Sha256;
     if (eq_ascii_ci(name, "SHA-384") || eq_ascii_ci(name, "SHA384")) return DigestAlgorithm::Sha384;
     if (eq_ascii_ci(name, "SHA-512") || eq_ascii_ci(name, "SHA512")) return DigestAlgorithm::Sha512;
+    if (eq_ascii_ci(name, "SHA3-224") || eq_ascii_ci(name, "SHA3_224")) return DigestAlgorithm::Sha3_224;
+    if (eq_ascii_ci(name, "SHA3-256") || eq_ascii_ci(name, "SHA3_256")) return DigestAlgorithm::Sha3_256;
+    if (eq_ascii_ci(name, "SHA3-384") || eq_ascii_ci(name, "SHA3_384")) return DigestAlgorithm::Sha3_384;
+    if (eq_ascii_ci(name, "SHA3-512") || eq_ascii_ci(name, "SHA3_512")) return DigestAlgorithm::Sha3_512;
     return {};
 }
 
@@ -212,6 +216,10 @@ StringRef digest_algorithm_name(DigestAlgorithm alg) noexcept {
         case DigestAlgorithm::Sha256: return "SHA-256";
         case DigestAlgorithm::Sha384: return "SHA-384";
         case DigestAlgorithm::Sha512: return "SHA-512";
+        case DigestAlgorithm::Sha3_224: return "SHA3-224";
+        case DigestAlgorithm::Sha3_256: return "SHA3-256";
+        case DigestAlgorithm::Sha3_384: return "SHA3-384";
+        case DigestAlgorithm::Sha3_512: return "SHA3-512";
     }
     return "SHA-256";
 }
@@ -225,6 +233,10 @@ usize digest_output_size(DigestAlgorithm alg) noexcept {
         case DigestAlgorithm::Sha256: return Sha256::kDigestSize;
         case DigestAlgorithm::Sha384: return Sha384::kDigestSize;
         case DigestAlgorithm::Sha512: return Sha512::kDigestSize;
+        case DigestAlgorithm::Sha3_224: return Sha3_224::kDigestSize;
+        case DigestAlgorithm::Sha3_256: return Sha3_256::kDigestSize;
+        case DigestAlgorithm::Sha3_384: return Sha3_384::kDigestSize;
+        case DigestAlgorithm::Sha3_512: return Sha3_512::kDigestSize;
     }
     return Sha256::kDigestSize;
 }
@@ -238,6 +250,10 @@ usize digest_block_size(DigestAlgorithm alg) noexcept {
         case DigestAlgorithm::Sha256: return Sha256::kBlockSize;
         case DigestAlgorithm::Sha384: return Sha384::kBlockSize;
         case DigestAlgorithm::Sha512: return Sha512::kBlockSize;
+        case DigestAlgorithm::Sha3_224: return Sha3_224::kBlockSize;
+        case DigestAlgorithm::Sha3_256: return Sha3_256::kBlockSize;
+        case DigestAlgorithm::Sha3_384: return Sha3_384::kBlockSize;
+        case DigestAlgorithm::Sha3_512: return Sha3_512::kBlockSize;
     }
     return Sha256::kBlockSize;
 }
@@ -917,6 +933,10 @@ void Digest::construct_active() noexcept {
         case DigestAlgorithm::Sha256: ::new (&m_storage.sha256) Sha256(); break;
         case DigestAlgorithm::Sha384: ::new (&m_storage.sha384) Sha384(); break;
         case DigestAlgorithm::Sha512: ::new (&m_storage.sha512) Sha512(); break;
+        case DigestAlgorithm::Sha3_224: ::new (&m_storage.sha3_224) Sha3_224(); break;
+        case DigestAlgorithm::Sha3_256: ::new (&m_storage.sha3_256) Sha3_256(); break;
+        case DigestAlgorithm::Sha3_384: ::new (&m_storage.sha3_384) Sha3_384(); break;
+        case DigestAlgorithm::Sha3_512: ::new (&m_storage.sha3_512) Sha3_512(); break;
     }
 }
 
@@ -929,6 +949,10 @@ void Digest::copy_active_from(const Digest& other) noexcept {
         case DigestAlgorithm::Sha256: ::new (&m_storage.sha256) Sha256(other.m_storage.sha256); break;
         case DigestAlgorithm::Sha384: ::new (&m_storage.sha384) Sha384(other.m_storage.sha384); break;
         case DigestAlgorithm::Sha512: ::new (&m_storage.sha512) Sha512(other.m_storage.sha512); break;
+        case DigestAlgorithm::Sha3_224: ::new (&m_storage.sha3_224) Sha3_224(other.m_storage.sha3_224); break;
+        case DigestAlgorithm::Sha3_256: ::new (&m_storage.sha3_256) Sha3_256(other.m_storage.sha3_256); break;
+        case DigestAlgorithm::Sha3_384: ::new (&m_storage.sha3_384) Sha3_384(other.m_storage.sha3_384); break;
+        case DigestAlgorithm::Sha3_512: ::new (&m_storage.sha3_512) Sha3_512(other.m_storage.sha3_512); break;
     }
 }
 
@@ -941,6 +965,10 @@ void Digest::destroy_active() noexcept {
         case DigestAlgorithm::Sha256: m_storage.sha256.~Sha256(); break;
         case DigestAlgorithm::Sha384: m_storage.sha384.~Sha384(); break;
         case DigestAlgorithm::Sha512: m_storage.sha512.~Sha512(); break;
+        case DigestAlgorithm::Sha3_224: m_storage.sha3_224.~Sha3_224(); break;
+        case DigestAlgorithm::Sha3_256: m_storage.sha3_256.~Sha3_256(); break;
+        case DigestAlgorithm::Sha3_384: m_storage.sha3_384.~Sha3_384(); break;
+        case DigestAlgorithm::Sha3_512: m_storage.sha3_512.~Sha3_512(); break;
     }
 }
 
@@ -974,6 +1002,10 @@ void Digest::reset() noexcept {
         case DigestAlgorithm::Sha256: m_storage.sha256.reset(); break;
         case DigestAlgorithm::Sha384: m_storage.sha384.reset(); break;
         case DigestAlgorithm::Sha512: m_storage.sha512.reset(); break;
+        case DigestAlgorithm::Sha3_224: m_storage.sha3_224.reset(); break;
+        case DigestAlgorithm::Sha3_256: m_storage.sha3_256.reset(); break;
+        case DigestAlgorithm::Sha3_384: m_storage.sha3_384.reset(); break;
+        case DigestAlgorithm::Sha3_512: m_storage.sha3_512.reset(); break;
     }
 }
 
@@ -986,6 +1018,10 @@ void Digest::update(const u8* data, usize len) noexcept {
         case DigestAlgorithm::Sha256: m_storage.sha256.update(data, len); break;
         case DigestAlgorithm::Sha384: m_storage.sha384.update(data, len); break;
         case DigestAlgorithm::Sha512: m_storage.sha512.update(data, len); break;
+        case DigestAlgorithm::Sha3_224: m_storage.sha3_224.update(data, len); break;
+        case DigestAlgorithm::Sha3_256: m_storage.sha3_256.update(data, len); break;
+        case DigestAlgorithm::Sha3_384: m_storage.sha3_384.update(data, len); break;
+        case DigestAlgorithm::Sha3_512: m_storage.sha3_512.update(data, len); break;
     }
 }
 
@@ -1000,6 +1036,10 @@ usize Digest::finalize(MutArrayRef<u8> out) noexcept {
         case DigestAlgorithm::Sha256: m_storage.sha256.finalize(out.data()); break;
         case DigestAlgorithm::Sha384: m_storage.sha384.finalize(out.data()); break;
         case DigestAlgorithm::Sha512: m_storage.sha512.finalize(out.data()); break;
+        case DigestAlgorithm::Sha3_224: m_storage.sha3_224.finalize(out.data()); break;
+        case DigestAlgorithm::Sha3_256: m_storage.sha3_256.finalize(out.data()); break;
+        case DigestAlgorithm::Sha3_384: m_storage.sha3_384.finalize(out.data()); break;
+        case DigestAlgorithm::Sha3_512: m_storage.sha3_512.finalize(out.data()); break;
     }
     return sz;
 }

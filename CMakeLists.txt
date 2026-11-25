@@ -25,12 +25,17 @@ endif()
 
 add_library(keel_crypto STATIC
     src/aes.cpp
+    src/argon2.cpp
+    src/blake.cpp
+    src/box.cpp
     src/chacha20.cpp
     src/ct.cpp
     src/curve25519.cpp
     src/digest.cpp
     src/hmac.cpp
     src/kdf.cpp
+    src/random.cpp
+    src/sha3.cpp
 )
 add_library(keel::crypto ALIAS keel_crypto)
 

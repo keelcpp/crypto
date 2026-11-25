@@ -2,6 +2,7 @@
 
 #include "keel/array.h"
 #include "keel/core.h"
+#include "keel/crypto/sha3.h"
 #include "keel/optional.h"
 #include "keel/ref.h"
 #include "keel/static_array.h"
@@ -16,10 +17,14 @@ enum class DigestAlgorithm : u8 {
     Sha256 = 4,
     Sha384 = 5,
     Sha512 = 6,
+    Sha3_224 = 7,
+    Sha3_256 = 8,
+    Sha3_384 = 9,
+    Sha3_512 = 10,
 };
 
 inline constexpr usize kMaxDigestSize = 64u;
-inline constexpr usize kMaxDigestBlockSize = 128u;
+inline constexpr usize kMaxDigestBlockSize = 144u;
 
 // Case-insensitive parser supporting canonical and compact names
 // (e.g. "MD2", "MD5", "SHA-1"/"SHA1", "SHA-224"/"SHA224",
@@ -323,6 +328,10 @@ private:
         Sha256 sha256;
         Sha384 sha384;
         Sha512 sha512;
+        Sha3_224 sha3_224;
+        Sha3_256 sha3_256;
+        Sha3_384 sha3_384;
+        Sha3_512 sha3_512;
         Storage() noexcept {}
         ~Storage() noexcept {}
     };

@@ -1,6 +1,7 @@
 #include "keel/crypto.h"
 #include "keel/format.h"
 #include "keel/io.h"
+#include "keel/number.h"
 
 namespace {
 
@@ -738,6 +739,244 @@ void test_ed25519_rfc8032() {
         check_true("Ed25519 non-canonical S>=L rejected",
                    !ed25519_verify(pub.data(), ArrayRef<u8>(), sig.data()));
     }
+
+    // Wycheproof adversarial checks:
+    // 1. Non-canonical y >= p in public key or R (p = 2^255 - 19 -> 0xedff...7f)
+    {
+        u8 noncanon_pub[32];
+        for (usize i = 0u; i < 32u; ++i) noncanon_pub[i] = 0xFFu;
+        noncanon_pub[0] = 0xEDu;
+        noncanon_pub[31] = 0x7Fu; // y == p
+        u8 dummy_sig[64] = {};
+        check_true("Ed25519 non-canonical y==p pub rejected",
+                   !ed25519_verify(noncanon_pub, ArrayRef<u8>(), dummy_sig));
+    }
+    // 2. X25519 all 7 known low-order points must return false
+    {
+        const StringRef low_order[4] = {
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "0100000000000000000000000000000000000000000000000000000000000000",
+            "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+        };
+        const Array<u8> sk = hex_bytes("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+        for (usize i = 0u; i < 4u; ++i) {
+            const Array<u8> pt = hex_bytes(low_order[i]);
+            u8 ss[32] = {};
+            check_true("X25519 low-order point rejected", !x25519(sk.data(), pt.data(), ss));
+        }
+    }
+}
+
+void test_sha3_and_shake_fips202() {
+    // FIPS 202 official vectors: empty & "abc"
+    check_eq_str("SHA3-224 empty", to_hex(sha3_224(StringRef("")).as_ref()).as_ref(),
+                 "6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7");
+    check_eq_str("SHA3-256 empty", to_hex(sha3_256(StringRef("")).as_ref()).as_ref(),
+                 "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a");
+    check_eq_str("SHA3-384 empty", to_hex(sha3_384(StringRef("")).as_ref()).as_ref(),
+                 "0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2ac3713831264adb47fb6bd1e058d5f004");
+    check_eq_str("SHA3-512 empty", to_hex(sha3_512(StringRef("")).as_ref()).as_ref(),
+                 "a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a6"
+                 "15b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26");
+    check_eq_str("SHA3-256 abc", to_hex(sha3_256(StringRef("abc")).as_ref()).as_ref(),
+                 "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532");
+
+    // Polymorphic Digest & HMAC with SHA3-256
+    auto d = Digest::create("SHA3-256");
+    check_true("Digest::create SHA3-256", d.has_value() && d->algorithm() == DigestAlgorithm::Sha3_256);
+    if (d.has_value()) {
+        d->update(StringRef("abc"));
+        check_eq_str("Digest SHA3-256 abc", to_hex(d->finalize().as_ref()).as_ref(),
+                     "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532");
+    }
+
+    // SHAKE128 / SHAKE256 incremental squeeze vs one-shot
+    const Array<u8> sk128 = shake128(ArrayRef<u8>(), 32u);
+    check_eq_str("SHAKE128 empty 32B", to_hex(sk128.as_ref()).as_ref(),
+                 "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26");
+    const Array<u8> sk256 = shake256(ArrayRef<u8>(), 32u);
+    check_eq_str("SHAKE256 empty 32B", to_hex(sk256.as_ref()).as_ref(),
+                 "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f");
+    Shake256 inc;
+    u8 p1[13] = {};
+    u8 p2[19] = {};
+    inc.squeeze(p1, 13u);
+    inc.squeeze(p2, 19u);
+    u8 joined[32] = {};
+    mem_copy(joined, p1, 13u);
+    mem_copy(joined + 13u, p2, 19u);
+    check_true("SHAKE256 incremental squeeze", ct_equal(ArrayRef<u8>(joined, 32u), sk256.as_ref()));
+}
+
+void test_blake_family() {
+    // RFC 7693 Appendix A (BLAKE2b-512 "abc") & Appendix B (BLAKE2s-256 "abc")
+    const StringRef abc = "abc";
+    const ArrayRef<u8> abc_b(reinterpret_cast<const u8*>(abc.data()), abc.size());
+    check_eq_str("BLAKE2b-512 abc", to_hex(blake2b_512(abc_b).as_ref()).as_ref(),
+                 "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d1"
+                 "7d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923");
+    check_eq_str("BLAKE2s-256 abc", to_hex(blake2s_256(abc_b).as_ref()).as_ref(),
+                 "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982");
+
+    // BLAKE3 official test vectors (input = 0,1,2,... mod 251)
+    auto make_b3_input = [](usize len) {
+        Array<u8> a(len, u8{0u});
+        for (usize i = 0u; i < len; ++i) a[i] = as<u8>(i % 251u);
+        return a;
+    };
+    const Array<u8> b3_0 = make_b3_input(0u);
+    check_eq_str("BLAKE3 len=0", to_hex(blake3(b3_0.as_ref()).as_ref()).as_ref(),
+                 "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262");
+
+    const Array<u8> b3_1 = make_b3_input(1u);
+    check_eq_str("BLAKE3 len=1", to_hex(blake3(b3_1.as_ref()).as_ref()).as_ref(),
+                 "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213");
+
+    const Array<u8> b3_1024 = make_b3_input(1024u);
+    check_eq_str("BLAKE3 len=1024", to_hex(blake3(b3_1024.as_ref()).as_ref()).as_ref(),
+                 "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7");
+
+    const Array<u8> b3_1025 = make_b3_input(1025u);
+    check_eq_str("BLAKE3 len=1025", to_hex(blake3(b3_1025.as_ref()).as_ref()).as_ref(),
+                 "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444");
+
+    // Multi-chunk subtree boundaries (len=2049 = 3 chunks, len=4097 = 5 chunks) + streaming + XOF seek
+    const Array<u8> b3_2049 = make_b3_input(2049u);
+    check_eq_str("BLAKE3 len=2049", to_hex(blake3(b3_2049.as_ref()).as_ref()).as_ref(),
+                 "5f4d72f40d7a5f82b15ca2b2e44b1de3c2ef86c426c95c1af0b6879522563030");
+    const Array<u8> b3_4097 = make_b3_input(4097u);
+    check_eq_str("BLAKE3 len=4097", to_hex(blake3(b3_4097.as_ref()).as_ref()).as_ref(),
+                 "9b4052b38f1c5fc8b1f9ff7ac7b27cd242487b3d890d15c96a1c25b8aa0fb995");
+    Blake3 stream_b3;
+    for (usize i = 0u; i < b3_2049.size(); ++i) stream_b3.update(b3_2049.data() + i, 1u);
+    check_true("BLAKE3 streaming==oneshot", ct_equal(stream_b3.finalize().as_ref(), blake3(b3_2049.as_ref()).as_ref()));
+    const Array<u8> xof_full = stream_b3.finalize_xof(131u, 0u);
+    const Array<u8> xof_tail = stream_b3.finalize_xof(67u, 64u);
+    check_true("BLAKE3 XOF seek=64", ct_equal(ArrayRef<u8>(xof_full.data() + 64u, 67u), xof_tail.as_ref()));
+
+    // BLAKE3 official keyed_hash & derive_key vectors (input len=0)
+    const StringRef b3_key_str = "whats the Elvish word for friend";
+    const u8* b3_key = reinterpret_cast<const u8*>(b3_key_str.data());
+    check_eq_str("BLAKE3 keyed len=0",
+                 to_hex(Blake3::keyed_hash(b3_key, b3_0.as_ref()).as_ref()).as_ref(),
+                 "92b2b75604ed3c761f9d6f62392c8a9227ad0ea3f09573e783f1498a4ed60d26");
+    const auto b3_dk = Blake3::derive("BLAKE3 2019-12-27 16:29:52 test vectors context", b3_0.as_ref(), 32u);
+    check_eq_str("BLAKE3 derive_key len=0", to_hex(b3_dk.as_ref()).as_ref(),
+                 "2cc39783c223154fea8dfb7c1b1660f2ac2dcbd1c1de8277b0b0dd39b7e50d7d");
+}
+
+void test_argon2_rfc9106() {
+    // RFC 9106 §5.1 (Argon2d), §5.2 (Argon2i), §5.3 (Argon2id):
+    // p=4, T=32, m=32 KiB, t=3, P=32x0x01, S=16x0x02, K=8x0x03, X=12x0x04
+    Array<u8> pw(32u, u8{0x01u});
+    Array<u8> salt(16u, u8{0x02u});
+    Array<u8> secret(8u, u8{0x03u});
+    Array<u8> ad(12u, u8{0x04u});
+
+    Argon2Params params{};
+    params.memory_kib = 32u;
+    params.iterations = 3u;
+    params.parallelism = 4u;
+    params.tag_len = 32u;
+
+    params.type = Argon2Type::Argon2d;
+    auto td = argon2(params, pw.as_ref(), salt.as_ref(), secret.as_ref(), ad.as_ref());
+    check_true("RFC9106 Argon2d ok", td.has_value());
+    if (td.has_value()) {
+        check_eq_str("RFC9106 Argon2d", to_hex(td->as_ref()).as_ref(),
+                     "512b391b6f1162975371d30919734294f868e3be3984f3c1a13a4db9fabe4acb");
+    }
+
+    params.type = Argon2Type::Argon2i;
+    auto ti = argon2(params, pw.as_ref(), salt.as_ref(), secret.as_ref(), ad.as_ref());
+    check_true("RFC9106 Argon2i ok", ti.has_value());
+    if (ti.has_value()) {
+        check_eq_str("RFC9106 Argon2i", to_hex(ti->as_ref()).as_ref(),
+                     "c814d9d1dc7f37aa13f0d77f2494bda1c8de6b016dd388d29952a4c4672b6ce8");
+    }
+
+    params.type = Argon2Type::Argon2id;
+    auto tid = argon2(params, pw.as_ref(), salt.as_ref(), secret.as_ref(), ad.as_ref());
+    check_true("RFC9106 Argon2id ok", tid.has_value());
+    if (tid.has_value()) {
+        check_eq_str("RFC9106 Argon2id", to_hex(tid->as_ref()).as_ref(),
+                     "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659");
+    }
+
+    // Invalid params rejected
+    Argon2Params bad = params;
+    bad.memory_kib = 4u;
+    check_true("Argon2 bad memory rejected", !argon2(bad, pw.as_ref(), salt.as_ref()).has_value());
+}
+
+void test_random_and_boxes() {
+    // 1. OS CSPRNG sanity (two 32-byte draws must not be equal or all-zero)
+    u8 r1[32] = {};
+    u8 r2[32] = {};
+    check_true("random_bytes 1", random_bytes(r1, 32u));
+    check_true("random_bytes 2", random_bytes(r2, 32u));
+    check_true("random_bytes distinct", !ct_equal(ArrayRef<u8>(r1, 32u), ArrayRef<u8>(r2, 32u)));
+
+    // 2. Keypair generation + X25519 / Ed25519 round-trip
+    auto alice = generate_x25519_keypair();
+    auto bob = generate_x25519_keypair();
+    check_true("gen X25519 keypairs", alice.has_value() && bob.has_value());
+    if (alice.has_value() && bob.has_value()) {
+        u8 ss1[32] = {};
+        u8 ss2[32] = {};
+        check_true("X25519 gen DH1", x25519(alice->secret_key.data(), bob->public_key.data(), ss1));
+        check_true("X25519 gen DH2", x25519(bob->secret_key.data(), alice->public_key.data(), ss2));
+        check_true("X25519 gen DH match", ct_equal(ArrayRef<u8>(ss1, 32u), ArrayRef<u8>(ss2, 32u)));
+    }
+
+    auto ed = generate_ed25519_keypair();
+    check_true("gen Ed25519 keypair", ed.has_value());
+    if (ed.has_value()) {
+        const StringRef msg = "keelcpp crypto verification message";
+        const ArrayRef<u8> m(reinterpret_cast<const u8*>(msg.data()), msg.size());
+        u8 sig[64] = {};
+        ed25519_sign(ed->seed.data(), m, sig);
+        check_true("Ed25519 gen verify", ed25519_verify(ed->public_key.data(), m, sig));
+    }
+
+    // 3. SecretBox seal/open + tamper rejection + distinct nonces
+    const StringRef pt_s = "Secret payload for keel::crypto::secret_box";
+    const StringRef aad_s = "header-context";
+    const ArrayRef<u8> pt(reinterpret_cast<const u8*>(pt_s.data()), pt_s.size());
+    const ArrayRef<u8> aad(reinterpret_cast<const u8*>(aad_s.data()), aad_s.size());
+    auto s1 = secret_box_seal(r1, pt, aad);
+    auto s2 = secret_box_seal(r1, pt, aad);
+    check_true("SecretBox seal ok", s1.has_value() && s2.has_value());
+    if (s1.has_value() && s2.has_value()) {
+        check_true("SecretBox randomized nonce", !ct_equal(s1->as_ref(), s2->as_ref()));
+        auto opened = secret_box_open(r1, s1->as_ref(), aad);
+        check_true("SecretBox open ok", opened.has_value() && ct_equal(opened->as_ref(), pt));
+        check_true("SecretBox wrong key fails", !secret_box_open(r2, s1->as_ref(), aad).has_value());
+        check_true("SecretBox wrong AAD fails", !secret_box_open(r1, s1->as_ref(), ArrayRef<u8>()).has_value());
+        Array<u8> tampered = s1->clone();
+        tampered[tampered.size() - 1u] ^= 1u;
+        check_true("SecretBox tampered tag fails", !secret_box_open(r1, tampered.as_ref(), aad).has_value());
+    }
+
+    // 4. SealedBox seal/open + wrong recipient + low-order ephemeral rejection
+    if (alice.has_value() && bob.has_value()) {
+        auto sb = sealed_box_seal(alice->public_key.data(), pt, aad);
+        check_true("SealedBox seal ok", sb.has_value());
+        if (sb.has_value()) {
+            auto opened = sealed_box_open(alice->secret_key.data(), alice->public_key.data(),
+                                          sb->as_ref(), aad);
+            check_true("SealedBox open ok", opened.has_value() && ct_equal(opened->as_ref(), pt));
+            check_true("SealedBox wrong recipient fails",
+                       !sealed_box_open(bob->secret_key.data(), bob->public_key.data(),
+                                        sb->as_ref(), aad).has_value());
+            Array<u8> bad_ephem = sb->clone();
+            for (usize i = 0u; i < 32u; ++i) bad_ephem[i] = 0u;
+            check_true("SealedBox zero ephem fails",
+                       !sealed_box_open(alice->secret_key.data(), alice->public_key.data(),
+                                        bad_ephem.as_ref(), aad).has_value());
+        }
+    }
 }
 
 Optional<Array<u8>> parse_cli_hex(StringRef s) {
@@ -862,20 +1101,141 @@ int main(int argc, char** argv) {
         stdout_write(line.as_ref());
         return 0;
     }
+    if (argc == 6 && StringRef(argv[1]) == "--xchacha20-poly1305-enc") {
+        auto key = parse_cli_hex(StringRef(argv[2]));
+        auto nonce = parse_cli_hex(StringRef(argv[3]));
+        auto aad = parse_cli_hex(StringRef(argv[4]));
+        auto pt = parse_cli_hex(StringRef(argv[5]));
+        if (!key.has_value() || !nonce.has_value() || !aad.has_value() || !pt.has_value() ||
+            key->size() != 32u || nonce->size() != 24u) return 2;
+        Array<u8> ct(pt->size(), u8{0u});
+        u8 tag[16] = {};
+        if (!xchacha20_poly1305_encrypt(key->data(), nonce->data(), aad->as_ref(),
+                                        pt->as_ref(), ct.as_mut_ref(), tag)) return 3;
+        const String line = format("{} {}\n", to_hex(ct.as_ref()), to_hex(ArrayRef<u8>(tag, 16u)));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 5 && StringRef(argv[1]) == "--shake") {
+        auto bits = parse_u64(StringRef(argv[2]));
+        auto out_len = parse_u64(StringRef(argv[3]));
+        auto msg = parse_cli_hex(StringRef(argv[4]));
+        if (!bits.is_ok() || !out_len.is_ok() || !msg.has_value()) return 2;
+        Array<u8> out = (bits.value() == 128u)
+            ? shake128(msg->as_ref(), as<usize>(out_len.value()))
+            : shake256(msg->as_ref(), as<usize>(out_len.value()));
+        const String line = format("{}\n", to_hex(out.as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 6 && StringRef(argv[1]) == "--blake2") {
+        const StringRef variant(argv[2]);
+        auto out_len = parse_u64(StringRef(argv[3]));
+        auto key = parse_cli_hex(StringRef(argv[4]));
+        auto msg = parse_cli_hex(StringRef(argv[5]));
+        if (!out_len.is_ok() || !key.has_value() || !msg.has_value()) return 2;
+        Array<u8> out = (variant == "2b")
+            ? Blake2b::hash(msg->as_ref(), as<usize>(out_len.value()), key->as_ref())
+            : Blake2s::hash(msg->as_ref(), as<usize>(out_len.value()), key->as_ref());
+        const String line = format("{}\n", to_hex(out.as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 5 && StringRef(argv[1]) == "--blake3") {
+        const StringRef mode(argv[2]);
+        auto key_or_ctx = parse_cli_hex(StringRef(argv[3]));
+        auto msg = parse_cli_hex(StringRef(argv[4]));
+        if (!key_or_ctx.has_value() || !msg.has_value()) return 2;
+        Array<u8> out;
+        if (mode == "hash") {
+            Blake3 h;
+            h.update(msg->as_ref());
+            out = h.finalize_xof(64u);
+        } else if (mode == "keyed" && key_or_ctx->size() == 32u) {
+            Blake3 h = Blake3::keyed(key_or_ctx->data());
+            h.update(msg->as_ref());
+            out = h.finalize_xof(64u);
+        } else if (mode == "derive") {
+            StringRef ctx_s(reinterpret_cast<const char*>(key_or_ctx->data()), key_or_ctx->size());
+            out = Blake3::derive(ctx_s, msg->as_ref(), 64u);
+        } else {
+            return 2;
+        }
+        const String line = format("{}\n", to_hex(out.as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 10 && StringRef(argv[1]) == "--argon2") {
+        const StringRef variant(argv[2]);
+        auto m = parse_u64(StringRef(argv[3]));
+        auto t = parse_u64(StringRef(argv[4]));
+        auto p = parse_u64(StringRef(argv[5]));
+        auto tlen = parse_u64(StringRef(argv[6]));
+        auto pw = parse_cli_hex(StringRef(argv[7]));
+        auto salt = parse_cli_hex(StringRef(argv[8]));
+        auto ad = parse_cli_hex(StringRef(argv[9]));
+        if (!m.is_ok() || !t.is_ok() || !p.is_ok() || !tlen.is_ok() ||
+            !pw.has_value() || !salt.has_value() || !ad.has_value()) return 2;
+        Argon2Params ap{};
+        ap.type = (variant == "d") ? Argon2Type::Argon2d
+                : (variant == "i") ? Argon2Type::Argon2i : Argon2Type::Argon2id;
+        ap.memory_kib = as<u32>(m.value());
+        ap.iterations = as<u32>(t.value());
+        ap.parallelism = as<u32>(p.value());
+        ap.tag_len = as<u32>(tlen.value());
+        auto tag = argon2(ap, pw->as_ref(), salt->as_ref(), {}, ad->as_ref());
+        if (!tag.has_value()) return 3;
+        const String line = format("{}\n", to_hex(tag->as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 7 && StringRef(argv[1]) == "--hkdf") {
+        auto alg = parse_digest_algorithm(StringRef(argv[2]));
+        auto salt = parse_cli_hex(StringRef(argv[3]));
+        auto ikm = parse_cli_hex(StringRef(argv[4]));
+        auto info = parse_cli_hex(StringRef(argv[5]));
+        auto out_len = parse_u64(StringRef(argv[6]));
+        if (!alg.has_value() || !salt.has_value() || !ikm.has_value() ||
+            !info.has_value() || !out_len.is_ok()) return 2;
+        auto okm = hkdf(*alg, salt->as_ref(), ikm->as_ref(), info->as_ref(), as<usize>(out_len.value()));
+        if (!okm.has_value()) return 3;
+        const String line = format("{}\n", to_hex(okm->as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 7 && StringRef(argv[1]) == "--pbkdf2") {
+        auto alg = parse_digest_algorithm(StringRef(argv[2]));
+        auto pw = parse_cli_hex(StringRef(argv[3]));
+        auto salt = parse_cli_hex(StringRef(argv[4]));
+        auto iters = parse_u64(StringRef(argv[5]));
+        auto out_len = parse_u64(StringRef(argv[6]));
+        if (!alg.has_value() || !pw.has_value() || !salt.has_value() ||
+            !iters.is_ok() || !out_len.is_ok()) return 2;
+        auto dk = pbkdf2_hmac(*alg, pw->as_ref(), salt->as_ref(),
+                              as<u32>(iters.value()), as<usize>(out_len.value()));
+        if (!dk.has_value()) return 3;
+        const String line = format("{}\n", to_hex(dk->as_ref()));
+        stdout_write(line.as_ref());
+        return 0;
+    }
 
     test_ct_and_hex();
     test_md2_rfc1319();
     test_md5_rfc1321();
     test_sha1_fips();
     test_sha2_fips();
+    test_sha3_and_shake_fips202();
+    test_blake_family();
     test_polymorphic_digest_and_streaming();
     test_hmac_rfc4231();
     test_kdf_rfcs();
+    test_argon2_rfc9106();
     test_aes_fips197_and_modes();
     test_aes_gcm_nist();
     test_chacha20_poly1305_rfc8439();
     test_x25519_rfc7748();
     test_ed25519_rfc8032();
+    test_random_and_boxes();
 
     if (g_failures == 0) {
         stdout_write("ALL keel_crypto tests PASSED.\n");
