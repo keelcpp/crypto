@@ -78,9 +78,11 @@ void KeccakSponge::permute() noexcept {
         // Iota
         m_state[0] ^= kKeccakRC[round];
     }
+    secure_zero(bc, sizeof(bc));
 }
 
 void KeccakSponge::absorb(const u8* data, usize len) noexcept {
+    if (len == 0u || !data) return;
     if (m_squeezing) reset(m_rate, m_pad);
     for (usize i = 0u; i < len; ++i) {
         const usize lane = m_pos >> 3u;
@@ -106,6 +108,7 @@ void KeccakSponge::finalize_absorb() noexcept {
 }
 
 void KeccakSponge::squeeze(u8* out, usize len) noexcept {
+    if (len == 0u || !out) return;
     if (!m_squeezing) finalize_absorb();
     for (usize i = 0u; i < len; ++i) {
         if (m_pos == m_rate) {
@@ -122,7 +125,7 @@ void KeccakSponge::squeeze(u8* out, usize len) noexcept {
 } // namespace detail
 
 void Sha3_224::finalize(u8* out) noexcept {
-    m_sponge.squeeze(out, kDigestSize);
+    if (out) m_sponge.squeeze(out, kDigestSize);
     reset();
 }
 
@@ -139,7 +142,7 @@ StaticArray<u8, Sha3_224::kDigestSize> Sha3_224::hash(ArrayRef<u8> data) noexcep
 }
 
 void Sha3_256::finalize(u8* out) noexcept {
-    m_sponge.squeeze(out, kDigestSize);
+    if (out) m_sponge.squeeze(out, kDigestSize);
     reset();
 }
 
@@ -156,7 +159,7 @@ StaticArray<u8, Sha3_256::kDigestSize> Sha3_256::hash(ArrayRef<u8> data) noexcep
 }
 
 void Sha3_384::finalize(u8* out) noexcept {
-    m_sponge.squeeze(out, kDigestSize);
+    if (out) m_sponge.squeeze(out, kDigestSize);
     reset();
 }
 
@@ -173,7 +176,7 @@ StaticArray<u8, Sha3_384::kDigestSize> Sha3_384::hash(ArrayRef<u8> data) noexcep
 }
 
 void Sha3_512::finalize(u8* out) noexcept {
-    m_sponge.squeeze(out, kDigestSize);
+    if (out) m_sponge.squeeze(out, kDigestSize);
     reset();
 }
 

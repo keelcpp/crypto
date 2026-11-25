@@ -36,6 +36,9 @@ bool derive_sealed_box_keys(const u8 ephem_pub[32], const u8 recipient_pub[32],
 
 Optional<Array<u8>> secret_box_seal(const u8 key[32], ArrayRef<u8> plaintext,
                                     ArrayRef<u8> aad, Allocator* alloc) {
+    if (!key || plaintext.size() > Limits<usize>::kMax - kSecretBoxOverhead) {
+        return Optional<Array<u8>>{};
+    }
     u8 nonce[24];
     if (!random_bytes(nonce, 24u)) return Optional<Array<u8>>{};
 
@@ -55,7 +58,7 @@ Optional<Array<u8>> secret_box_seal(const u8 key[32], ArrayRef<u8> plaintext,
 
 Optional<Array<u8>> secret_box_open(const u8 key[32], ArrayRef<u8> sealed,
                                     ArrayRef<u8> aad, Allocator* alloc) {
-    if (sealed.size() < kSecretBoxOverhead) return Optional<Array<u8>>{};
+    if (!key || sealed.size() < kSecretBoxOverhead) return Optional<Array<u8>>{};
     const usize pt_len = sealed.size() - kSecretBoxOverhead;
     const u8* nonce = sealed.data();
     const ArrayRef<u8> ct(sealed.data() + 24u, pt_len);
@@ -71,6 +74,9 @@ Optional<Array<u8>> secret_box_open(const u8 key[32], ArrayRef<u8> sealed,
 
 Optional<Array<u8>> sealed_box_seal(const u8 recipient_public[32], ArrayRef<u8> plaintext,
                                     ArrayRef<u8> aad, Allocator* alloc) {
+    if (!recipient_public || plaintext.size() > Limits<usize>::kMax - kSealedBoxOverhead) {
+        return Optional<Array<u8>>{};
+    }
     auto ephem = generate_x25519_keypair();
     if (!ephem.has_value()) return Optional<Array<u8>>{};
 
@@ -108,7 +114,9 @@ Optional<Array<u8>> sealed_box_seal(const u8 recipient_public[32], ArrayRef<u8> 
 
 Optional<Array<u8>> sealed_box_open(const u8 recipient_secret[32], const u8 recipient_public[32],
                                     ArrayRef<u8> sealed, ArrayRef<u8> aad, Allocator* alloc) {
-    if (sealed.size() < kSealedBoxOverhead) return Optional<Array<u8>>{};
+    if (!recipient_secret || !recipient_public || sealed.size() < kSealedBoxOverhead) {
+        return Optional<Array<u8>>{};
+    }
     const u8* ephem_pub = sealed.data();
     const usize pt_len = sealed.size() - kSealedBoxOverhead;
     const ArrayRef<u8> ct(sealed.data() + 32u, pt_len);

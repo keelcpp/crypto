@@ -100,6 +100,8 @@ void compress_block(Block& out, const Block& x, const Block& y, bool xor_with_ol
     } else {
         for (usize i = 0u; i < kBlockU64s; ++i) out.v[i] = r.v[i] ^ z.v[i];
     }
+    secure_zero(&r, sizeof(r));
+    secure_zero(&z, sizeof(z));
 }
 
 // RFC 9106 §3.3 variable-length hash function H'(in, out_len)
@@ -145,6 +147,7 @@ void next_addresses(Block& addr_block, Block& input_block, const Block& zero_blo
     Block tmp{};
     compress_block(tmp, zero_block, input_block, false);
     compress_block(addr_block, zero_block, tmp, false);
+    secure_zero(&tmp, sizeof(tmp));
 }
 
 u32 index_alpha(u32 pass, u32 slice, u32 index, u32 lane_length, u32 segment_length,
@@ -184,10 +187,16 @@ Optional<Array<u8>> argon2(const Argon2Params& params,
                            ArrayRef<u8> secret,
                            ArrayRef<u8> associated_data,
                            Allocator* alloc) {
-    if (params.parallelism == 0u || params.iterations == 0u || params.tag_len < 4u) {
+    if (params.parallelism == 0u || params.parallelism > 0x00FFFFFFu ||
+        params.iterations == 0u || params.tag_len < 4u) {
         return Optional<Array<u8>>{};
     }
-    if (params.memory_kib < 8u * params.parallelism) {
+    if (as<u64>(params.memory_kib) < u64{8u} * as<u64>(params.parallelism)) {
+        return Optional<Array<u8>>{};
+    }
+    constexpr u64 kMaxU32 = 0xFFFFFFFFull;
+    if (as<u64>(password.size()) > kMaxU32 || as<u64>(salt.size()) > kMaxU32 ||
+        as<u64>(secret.size()) > kMaxU32 || as<u64>(associated_data.size()) > kMaxU32) {
         return Optional<Array<u8>>{};
     }
     const u32 type_u32 = as<u32>(params.type);
@@ -196,7 +205,7 @@ Optional<Array<u8>> argon2(const Argon2Params& params,
     }
 
     const u32 lanes = params.parallelism;
-    const u32 segment_length = params.memory_kib / (lanes * kSyncPoints);
+    const u32 segment_length = as<u32>(as<u64>(params.memory_kib) / (as<u64>(lanes) * as<u64>(kSyncPoints)));
     const u32 lane_length = segment_length * kSyncPoints;
     const u32 memory_blocks = lane_length * lanes;
 
@@ -271,13 +280,12 @@ Optional<Array<u8>> argon2(const Argon2Params& params,
                     next_addresses(addr_block, input_block, zero_block);
                 }
 
-                u32 curr_off = lane * lane_length + slice * segment_length + start_idx;
-                u32 prev_off = (curr_off % lane_length == 0u) ? (curr_off + lane_length - 1u) : (curr_off - 1u);
-
+                const usize lane_base = as<usize>(lane) * as<usize>(lane_length);
                 for (u32 idx = start_idx; idx < segment_length; ++idx) {
-                    if (curr_off % lane_length == 1u) {
-                        prev_off = curr_off - 1u;
-                    }
+                    const u32 col = slice * segment_length + idx;
+                    const u32 prev_col = (col == 0u) ? (lane_length - 1u) : (col - 1u);
+                    const usize curr_off = lane_base + as<usize>(col);
+                    const usize prev_off = lane_base + as<usize>(prev_col);
 
                     u64 pseudo_rand = 0u;
                     if (data_indep) {
@@ -296,9 +304,6 @@ Optional<Array<u8>> argon2(const Argon2Params& params,
                                                     ref_lane == lane, j1);
                     const Block& ref_blk = mem[as<usize>(ref_lane) * as<usize>(lane_length) + as<usize>(ref_idx)];
                     compress_block(mem[curr_off], mem[prev_off], ref_blk, pass > 0u);
-
-                    ++curr_off;
-                    ++prev_off;
                 }
             }
         }

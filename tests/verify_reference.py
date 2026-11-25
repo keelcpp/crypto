@@ -150,15 +150,24 @@ for alg, py_name in [("SHA-256", "sha256"), ("SHA-512", "sha512"), ("SHA3-256", 
 
 # ---------------------------------------------------------------------------
 # 5. Argon2id / Argon2i / Argon2d vs OpenSSL 3.5.5 CLI
+#    Includes segment_length >= 128 (m=512, 1024) and non-empty secret (pepper)
 # ---------------------------------------------------------------------------
 if os.path.exists(OPENSSL_EXE):
     for variant, ossl_alg in [("id", "ARGON2ID"), ("i", "ARGON2I"), ("d", "ARGON2D")]:
-        for m, t, p, tlen in [(32, 3, 1, 32), (64, 2, 2, 32), (128, 3, 4, 64), (256, 2, 1, 16)]:
+        for m, t, p, tlen, slen in [
+            (32, 3, 1, 32, 0),
+            (64, 2, 2, 32, 8),
+            (128, 3, 4, 64, 16),
+            (512, 2, 1, 32, 0),
+            (1024, 2, 1, 32, 12),
+        ]:
             pw = os.urandom(15)
             salt = os.urandom(16)
             ad = os.urandom(9)
-            got = run_keel("--argon2", variant, str(m), str(t), str(p), str(tlen), hx(pw), hx(salt), hx(ad))
-            r = subprocess.run([
+            sec = os.urandom(slen)
+            got = run_keel("--argon2", variant, str(m), str(t), str(p), str(tlen),
+                           hx(pw), hx(salt), hx(ad), hx(sec))
+            cmd = [
                 OPENSSL_EXE, "kdf", "-keylen", str(tlen),
                 "-kdfopt", f"hexpass:{pw.hex()}",
                 "-kdfopt", f"hexsalt:{salt.hex()}",
@@ -167,10 +176,13 @@ if os.path.exists(OPENSSL_EXE):
                 "-kdfopt", f"iter:{t}",
                 "-kdfopt", f"lanes:{p}",
                 "-kdfopt", "threads:1",
-                ossl_alg
-            ], capture_output=True, text=True, check=True)
+            ]
+            if sec:
+                cmd += ["-kdfopt", f"hexsecret:{sec.hex()}"]
+            cmd.append(ossl_alg)
+            r = subprocess.run(cmd, capture_output=True, text=True, check=True)
             exp = r.stdout.strip().replace(":", "").lower()
-            check(f"Argon2{variant} m={m} t={t} p={p} len={tlen}", got, exp)
+            check(f"Argon2{variant} m={m} t={t} p={p} sec={slen} len={tlen}", got, exp)
             total_checks += 1
 
 # ---------------------------------------------------------------------------
@@ -296,7 +308,11 @@ if LIBCRYPTO is not None:
         assert lib.EVP_DigestSign(md, sig, ctypes.byref(slen), msg, len(msg)) == 1
         lib.EVP_MD_CTX_free(md); lib.EVP_PKEY_free(k)
         check(f"Ed25519 sign len={mlen}", run_keel("--ed25519-sign", hx(seed), hx(msg)), sig.raw.hex())
-        total_checks += 2
+        check(f"Ed25519 verify valid len={mlen}", run_keel("--ed25519-verify", hx(pub.raw), hx(msg), hx(sig.raw)), "1")
+        bad_sig = bytearray(sig.raw)
+        bad_sig[0] ^= 0x01
+        check(f"Ed25519 verify tampered len={mlen}", run_keel("--ed25519-verify", hx(pub.raw), hx(msg), hx(bytes(bad_sig))), "0")
+        total_checks += 4
 
 # ---------------------------------------------------------------------------
 # 7. XChaCha20-Poly1305 vs PyCryptodome

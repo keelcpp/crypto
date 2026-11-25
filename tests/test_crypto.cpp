@@ -751,16 +751,19 @@ void test_ed25519_rfc8032() {
         check_true("Ed25519 non-canonical y==p pub rejected",
                    !ed25519_verify(noncanon_pub, ArrayRef<u8>(), dummy_sig));
     }
-    // 2. X25519 all 7 known low-order points must return false
+    // 2. X25519 all 7 known low-order points (RFC 7748 / Wycheproof) must return false
     {
-        const StringRef low_order[4] = {
+        const StringRef low_order[7] = {
             "0000000000000000000000000000000000000000000000000000000000000000",
             "0100000000000000000000000000000000000000000000000000000000000000",
             "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
-            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+            "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+            "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+            "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
         };
         const Array<u8> sk = hex_bytes("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
-        for (usize i = 0u; i < 4u; ++i) {
+        for (usize i = 0u; i < 7u; ++i) {
             const Array<u8> pt = hex_bytes(low_order[i]);
             u8 ss[32] = {};
             check_true("X25519 low-order point rejected", !x25519(sk.data(), pt.data(), ss));
@@ -807,6 +810,22 @@ void test_sha3_and_shake_fips202() {
     mem_copy(joined, p1, 13u);
     mem_copy(joined + 13u, p2, 19u);
     check_true("SHAKE256 incremental squeeze", ct_equal(ArrayRef<u8>(joined, 32u), sk256.as_ref()));
+
+    // Streaming chunk-by-chunk equivalence across rate boundaries (168 / 136 / 104 / 72 bytes)
+    Array<u8> msg(401u, u8{0u});
+    for (usize i = 0u; i < msg.size(); ++i) msg[i] = as<u8>((i * 37u + 13u) & 0xFFu);
+    Sha3_256 s256;
+    for (usize i = 0u; i < msg.size(); i += 7u) {
+        const usize n = (msg.size() - i < 7u) ? (msg.size() - i) : 7u;
+        s256.update(msg.data() + i, n);
+    }
+    check_true("SHA3-256 streaming==oneshot", ct_equal(s256.finalize().as_ref(), sha3_256(msg.as_ref()).as_ref()));
+    Shake128 sk128_stream;
+    for (usize i = 0u; i < msg.size(); ++i) sk128_stream.update(msg.data() + i, 1u);
+    Array<u8> sk128_out(211u, u8{0u});
+    sk128_stream.squeeze(sk128_out.data(), 73u);
+    sk128_stream.squeeze(sk128_out.data() + 73u, 138u);
+    check_true("SHAKE128 streaming==oneshot", ct_equal(sk128_out.as_ref(), shake128(msg.as_ref(), 211u).as_ref()));
 }
 
 void test_blake_family() {
@@ -864,6 +883,30 @@ void test_blake_family() {
     const auto b3_dk = Blake3::derive("BLAKE3 2019-12-27 16:29:52 test vectors context", b3_0.as_ref(), 32u);
     check_eq_str("BLAKE3 derive_key len=0", to_hex(b3_dk.as_ref()).as_ref(),
                  "2cc39783c223154fea8dfb7c1b1660f2ac2dcbd1c1de8277b0b0dd39b7e50d7d");
+
+    // BLAKE2b / BLAKE2s streaming equivalence across block boundaries + invalid init safety
+    Array<u8> b2_msg(305u, u8{0u});
+    for (usize i = 0u; i < b2_msg.size(); ++i) b2_msg[i] = as<u8>((i * 29u + 7u) & 0xFFu);
+    const Array<u8> b2_key(19u, u8{0x5Au});
+    Blake2b b2b_s(48u, b2_key.as_ref());
+    for (usize i = 0u; i < b2_msg.size(); i += 11u) {
+        const usize n = (b2_msg.size() - i < 11u) ? (b2_msg.size() - i) : 11u;
+        b2b_s.update(b2_msg.data() + i, n);
+    }
+    check_true("BLAKE2b keyed streaming==oneshot",
+               ct_equal(b2b_s.finalize().as_ref(), Blake2b::hash(b2_msg.as_ref(), 48u, b2_key.as_ref()).as_ref()));
+    Blake2s b2s_s(20u, b2_key.as_ref());
+    for (usize i = 0u; i < b2_msg.size(); i += 5u) {
+        const usize n = (b2_msg.size() - i < 5u) ? (b2_msg.size() - i) : 5u;
+        b2s_s.update(b2_msg.data() + i, n);
+    }
+    check_true("BLAKE2s keyed streaming==oneshot",
+               ct_equal(b2s_s.finalize().as_ref(), Blake2s::hash(b2_msg.as_ref(), 20u, b2_key.as_ref()).as_ref()));
+
+    Blake2b invalid_b2b(0u);
+    check_true("BLAKE2b invalid ctor safe", invalid_b2b.output_size() == 0u && invalid_b2b.finalize().empty());
+    Blake2s invalid_b2s(33u);
+    check_true("BLAKE2s invalid ctor safe", invalid_b2s.output_size() == 0u && invalid_b2s.finalize().empty());
 }
 
 void test_argon2_rfc9106() {
@@ -904,10 +947,19 @@ void test_argon2_rfc9106() {
                      "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659");
     }
 
-    // Invalid params rejected
+    // Invalid params rejected (incl. u32 overflow guard on 8 * parallelism)
     Argon2Params bad = params;
     bad.memory_kib = 4u;
     check_true("Argon2 bad memory rejected", !argon2(bad, pw.as_ref(), salt.as_ref()).has_value());
+    bad = params;
+    bad.parallelism = 0x20000000u;
+    check_true("Argon2 overflow parallelism rejected", !argon2(bad, pw.as_ref(), salt.as_ref()).has_value());
+    bad = params;
+    bad.tag_len = 3u;
+    check_true("Argon2 short tag rejected", !argon2(bad, pw.as_ref(), salt.as_ref()).has_value());
+    bad = params;
+    bad.iterations = 0u;
+    check_true("Argon2 zero iterations rejected", !argon2(bad, pw.as_ref(), salt.as_ref()).has_value());
 }
 
 void test_random_and_boxes() {
@@ -977,6 +1029,12 @@ void test_random_and_boxes() {
                                         bad_ephem.as_ref(), aad).has_value());
         }
     }
+
+    // 5. Null-pointer defense-in-depth on box APIs
+    check_true("SecretBox seal null key rejected", !secret_box_seal(nullptr, pt, aad).has_value());
+    check_true("SecretBox open null key rejected", !secret_box_open(nullptr, pt, aad).has_value());
+    check_true("SealedBox seal null pub rejected", !sealed_box_seal(nullptr, pt, aad).has_value());
+    check_true("SealedBox open null keys rejected", !sealed_box_open(nullptr, nullptr, pt, aad).has_value());
 }
 
 Optional<Array<u8>> parse_cli_hex(StringRef s) {
@@ -1165,7 +1223,7 @@ int main(int argc, char** argv) {
         stdout_write(line.as_ref());
         return 0;
     }
-    if (argc == 10 && StringRef(argv[1]) == "--argon2") {
+    if ((argc == 10 || argc == 11) && StringRef(argv[1]) == "--argon2") {
         const StringRef variant(argv[2]);
         auto m = parse_u64(StringRef(argv[3]));
         auto t = parse_u64(StringRef(argv[4]));
@@ -1174,8 +1232,9 @@ int main(int argc, char** argv) {
         auto pw = parse_cli_hex(StringRef(argv[7]));
         auto salt = parse_cli_hex(StringRef(argv[8]));
         auto ad = parse_cli_hex(StringRef(argv[9]));
+        Optional<Array<u8>> sec = (argc == 11) ? parse_cli_hex(StringRef(argv[10])) : Optional<Array<u8>>(Array<u8>{});
         if (!m.is_ok() || !t.is_ok() || !p.is_ok() || !tlen.is_ok() ||
-            !pw.has_value() || !salt.has_value() || !ad.has_value()) return 2;
+            !pw.has_value() || !salt.has_value() || !ad.has_value() || !sec.has_value()) return 2;
         Argon2Params ap{};
         ap.type = (variant == "d") ? Argon2Type::Argon2d
                 : (variant == "i") ? Argon2Type::Argon2i : Argon2Type::Argon2id;
@@ -1183,10 +1242,20 @@ int main(int argc, char** argv) {
         ap.iterations = as<u32>(t.value());
         ap.parallelism = as<u32>(p.value());
         ap.tag_len = as<u32>(tlen.value());
-        auto tag = argon2(ap, pw->as_ref(), salt->as_ref(), {}, ad->as_ref());
+        auto tag = argon2(ap, pw->as_ref(), salt->as_ref(), sec->as_ref(), ad->as_ref());
         if (!tag.has_value()) return 3;
         const String line = format("{}\n", to_hex(tag->as_ref()));
         stdout_write(line.as_ref());
+        return 0;
+    }
+    if (argc == 5 && StringRef(argv[1]) == "--ed25519-verify") {
+        auto pub = parse_cli_hex(StringRef(argv[2]));
+        auto msg = parse_cli_hex(StringRef(argv[3]));
+        auto sig = parse_cli_hex(StringRef(argv[4]));
+        if (!pub.has_value() || !msg.has_value() || !sig.has_value() ||
+            pub->size() != 32u || sig->size() != 64u) return 2;
+        const bool ok = ed25519_verify(pub->data(), msg->as_ref(), sig->data());
+        stdout_write(ok ? "1\n" : "0\n");
         return 0;
     }
     if (argc == 7 && StringRef(argv[1]) == "--hkdf") {

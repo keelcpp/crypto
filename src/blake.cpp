@@ -111,6 +111,8 @@ void b3_compress(const u32 cv[8], const u32 block_words[16], u64 counter,
         out[i] = s[i] ^ s[i + 8u];
         out[i + 8u] = s[i + 8u] ^ cv[i];
     }
+    secure_zero(s, sizeof(s));
+    secure_zero(m, sizeof(m));
 }
 
 struct B3Output {
@@ -124,6 +126,7 @@ struct B3Output {
         u32 full[16];
         b3_compress(input_cv, block_words, counter, block_len, flags, full);
         for (usize i = 0u; i < 8u; ++i) out_cv[i] = full[i];
+        secure_zero(full, sizeof(full));
     }
 
     void root_output_bytes(u8* out, usize out_len, u64 seek) const noexcept {
@@ -178,7 +181,14 @@ Blake2b::~Blake2b() noexcept {
 }
 
 bool Blake2b::init(usize out_len, ArrayRef<u8> key) noexcept {
-    if (out_len == 0u || out_len > kMaxDigestSize || key.size() > kMaxKeySize) return false;
+    if (out_len == 0u || out_len > kMaxDigestSize || key.size() > kMaxKeySize) {
+        secure_zero(m_h, sizeof(m_h));
+        secure_zero(m_t, sizeof(m_t));
+        secure_zero(m_buf, sizeof(m_buf));
+        m_buf_len = 0u;
+        m_out_len = 0u;
+        return false;
+    }
     for (usize i = 0u; i < 8u; ++i) m_h[i] = kBlake2bIv[i];
     m_h[0] ^= 0x01010000ull ^ (as<u64>(key.size()) << 8u) ^ as<u64>(out_len);
     m_t[0] = 0u;
@@ -229,9 +239,12 @@ void Blake2b::compress(const u8 block[128], bool is_last) noexcept {
         g(3u, 4u, 9u,  14u, m[s[14]], m[s[15]]);
     }
     for (usize i = 0u; i < 8u; ++i) m_h[i] ^= v[i] ^ v[i + 8u];
+    secure_zero(v, sizeof(v));
+    secure_zero(m, sizeof(m));
 }
 
 void Blake2b::update(const u8* data, usize len) noexcept {
+    if (m_out_len == 0u || len == 0u || !data) return;
     for (usize i = 0u; i < len; ++i) {
         if (m_buf_len == kBlockSize) {
             m_t[0] += as<u64>(kBlockSize);
@@ -244,6 +257,7 @@ void Blake2b::update(const u8* data, usize len) noexcept {
 }
 
 void Blake2b::finalize(u8* out) noexcept {
+    if (m_out_len == 0u || !out) return;
     m_t[0] += as<u64>(m_buf_len);
     if (m_t[0] < as<u64>(m_buf_len)) ++m_t[1];
     while (m_buf_len < kBlockSize) m_buf[m_buf_len++] = 0u;
@@ -257,6 +271,7 @@ void Blake2b::finalize(u8* out) noexcept {
 }
 
 Array<u8> Blake2b::finalize(Allocator* alloc) {
+    if (m_out_len == 0u) return Array<u8>(alloc);
     Array<u8> out(m_out_len, u8{0u}, alloc);
     finalize(out.data());
     return out;
@@ -284,7 +299,14 @@ Blake2s::~Blake2s() noexcept {
 }
 
 bool Blake2s::init(usize out_len, ArrayRef<u8> key) noexcept {
-    if (out_len == 0u || out_len > kMaxDigestSize || key.size() > kMaxKeySize) return false;
+    if (out_len == 0u || out_len > kMaxDigestSize || key.size() > kMaxKeySize) {
+        secure_zero(m_h, sizeof(m_h));
+        secure_zero(m_t, sizeof(m_t));
+        secure_zero(m_buf, sizeof(m_buf));
+        m_buf_len = 0u;
+        m_out_len = 0u;
+        return false;
+    }
     for (usize i = 0u; i < 8u; ++i) m_h[i] = kBlake2sIv[i];
     m_h[0] ^= 0x01010000u ^ (as<u32>(key.size()) << 8u) ^ as<u32>(out_len);
     m_t[0] = 0u;
@@ -335,9 +357,12 @@ void Blake2s::compress(const u8 block[64], bool is_last) noexcept {
         g(3u, 4u, 9u,  14u, m[s[14]], m[s[15]]);
     }
     for (usize i = 0u; i < 8u; ++i) m_h[i] ^= v[i] ^ v[i + 8u];
+    secure_zero(v, sizeof(v));
+    secure_zero(m, sizeof(m));
 }
 
 void Blake2s::update(const u8* data, usize len) noexcept {
+    if (m_out_len == 0u || len == 0u || !data) return;
     for (usize i = 0u; i < len; ++i) {
         if (m_buf_len == kBlockSize) {
             m_t[0] += as<u32>(kBlockSize);
@@ -350,6 +375,7 @@ void Blake2s::update(const u8* data, usize len) noexcept {
 }
 
 void Blake2s::finalize(u8* out) noexcept {
+    if (m_out_len == 0u || !out) return;
     m_t[0] += as<u32>(m_buf_len);
     if (m_t[0] < as<u32>(m_buf_len)) ++m_t[1];
     while (m_buf_len < kBlockSize) m_buf[m_buf_len++] = 0u;
@@ -363,6 +389,7 @@ void Blake2s::finalize(u8* out) noexcept {
 }
 
 Array<u8> Blake2s::finalize(Allocator* alloc) {
+    if (m_out_len == 0u) return Array<u8>(alloc);
     Array<u8> out(m_out_len, u8{0u}, alloc);
     finalize(out.data());
     return out;
@@ -404,8 +431,10 @@ Blake3::~Blake3() noexcept {
 }
 
 Blake3 Blake3::keyed(const u8 key[32]) noexcept {
-    u32 kw[8];
-    for (usize i = 0u; i < 8u; ++i) kw[i] = load_le32(key + i * 4u);
+    u32 kw[8] = {};
+    if (key) {
+        for (usize i = 0u; i < 8u; ++i) kw[i] = load_le32(key + i * 4u);
+    }
     Blake3 h;
     h.init_internal(kw, kB3KeyedHash);
     secure_zero(kw, sizeof(kw));
@@ -446,6 +475,7 @@ void Blake3::add_chunk_cv(u32 new_cv[8], u64 total_chunks) noexcept {
 }
 
 void Blake3::update(const u8* data, usize len) noexcept {
+    if (len == 0u || !data) return;
     usize off = 0u;
     while (off < len) {
         const usize chunk_len = as<usize>(m_chunk.blocks_compressed) * 64u + as<usize>(m_chunk.buf_len);
@@ -464,6 +494,9 @@ void Blake3::update(const u8* data, usize len) noexcept {
             o.chaining_value(chunk_cv);
             const u64 total_chunks = m_chunk.chunk_counter + 1u;
             add_chunk_cv(chunk_cv, total_chunks);
+            secure_zero(words, sizeof(words));
+            secure_zero(&o, sizeof(o));
+            secure_zero(chunk_cv, sizeof(chunk_cv));
 
             for (usize i = 0u; i < 8u; ++i) m_chunk.cv[i] = m_key_words[i];
             m_chunk.chunk_counter = total_chunks;
@@ -480,6 +513,8 @@ void Blake3::update(const u8* data, usize len) noexcept {
             b3_compress(m_chunk.cv, words, m_chunk.chunk_counter, 64u,
                         as<u8>(m_chunk.flags | start_flag), out16);
             for (usize i = 0u; i < 8u; ++i) m_chunk.cv[i] = out16[i];
+            secure_zero(words, sizeof(words));
+            secure_zero(out16, sizeof(out16));
             ++m_chunk.blocks_compressed;
             mem_zero(m_chunk.buf, sizeof(m_chunk.buf));
             m_chunk.buf_len = 0u;
@@ -494,6 +529,7 @@ void Blake3::update(const u8* data, usize len) noexcept {
 }
 
 void Blake3::finalize(u8* out, usize out_len, u64 seek) const noexcept {
+    if (out_len == 0u || !out) return;
     u8 padded[64] = {};
     if (m_chunk.buf_len > 0u) mem_copy(padded, m_chunk.buf, m_chunk.buf_len);
     B3Output output{};
@@ -505,13 +541,15 @@ void Blake3::finalize(u8* out, usize out_len, u64 seek) const noexcept {
     output.flags = as<u8>(m_chunk.flags | start_flag | kB3ChunkEnd);
 
     usize remaining = as<usize>(m_cv_stack_len);
+    u32 right_cv[8] = {};
     while (remaining > 0u) {
         --remaining;
-        u32 right_cv[8];
         output.chaining_value(right_cv);
         output = b3_parent_output(m_cv_stack[remaining], right_cv, m_key_words, m_flags);
     }
     output.root_output_bytes(out, out_len, seek);
+    secure_zero(right_cv, sizeof(right_cv));
+    secure_zero(&output, sizeof(output));
     secure_zero(padded, sizeof(padded));
 }
 
