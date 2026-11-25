@@ -27,6 +27,7 @@ add_library(keel_crypto STATIC
     src/aes.cpp
     src/chacha20.cpp
     src/ct.cpp
+    src/curve25519.cpp
     src/digest.cpp
     src/hmac.cpp
     src/kdf.cpp
