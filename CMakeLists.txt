@@ -111,6 +111,14 @@ if(KEEL_CRYPTO_BUILD_TESTS)
     else()
         target_compile_options(test_crypto PRIVATE -Wall -Wextra -Wpedantic)
     endif()
+    if(COMMAND keel_enforce_guidelines)
+        keel_enforce_guidelines(test_crypto
+            SCOPE ALL
+            BAN_RAW_INTS ALL
+            BAN_RAW_FLOATS ALL
+            WARNINGS OFF
+        )
+    endif()
     add_test(NAME test_crypto COMMAND test_crypto)
 
     get_target_property(KEEL_CORE_INC_DIRS keel::keel INTERFACE_INCLUDE_DIRECTORIES)
